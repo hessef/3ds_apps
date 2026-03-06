@@ -53,7 +53,7 @@ import numpy as np
 import cv2
 
 # -------------------- Debug constants --------------------
-DEBUG = True
+DEBUG = False
 
 # -------------------- Protocol constants --------------------
 REQUEST_BYTE = b"N"
@@ -318,7 +318,7 @@ def main():
             if key == ord('q'):
                 stop_flag.set()
                 break
-
+            """
             # Periodic FPS print
             now = time.time()
             if now - last_print >= 2.0:
@@ -326,7 +326,7 @@ def main():
                 print(f"[client] approx FPS: {fps:.1f}")
                 last_frames = frames
                 last_print = now
-            """
+            
         # If we exit because stop was set, fall through to cleanup.
 
     finally:
