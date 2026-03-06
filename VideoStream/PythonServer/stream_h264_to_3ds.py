@@ -39,6 +39,7 @@ from typing import List
 # ------------------------ Configuration ------------------------
 
 PORT = 5000
+WEBCAM = "c922 Pro Stream Webcam"
 
 # Conservative bitrate while you’re bringing up the pipeline.
 # Increase later once it’s stable.
@@ -197,17 +198,55 @@ def ffmpeg_h264_stream(path: str) -> subprocess.Popen:
 
     return subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=0)
 
+def ffmpeg_h264_stream_webcam(device_name: str) -> subprocess.Popen:
+    vf = (
+        "scale=400:240:force_original_aspect_ratio=decrease,"
+        "pad=400:240:(400-iw)/2:(240-ih)/2,"
+        "transpose=1"
+    )
+
+    cmd = [
+        "ffmpeg",
+        "-loglevel", "error",
+
+        # Webcam input on Windows
+        "-f", "dshow",
+        "-i", f"video={device_name}",
+
+        # Optional: force capture size/fps from the webcam before filtering
+        "-video_size", "640x480",
+        "-framerate", "30",
+
+        "-vf", vf,
+        "-r", FPS,
+
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-profile:v", "baseline",
+        "-level:v", "3.0",
+        "-tune", "zerolatency",
+        "-g", str(int(FPS)),
+        "-b:v", BITRATE,
+        "-x264-params", "repeat-headers=1:scenecut=0:sync-lookahead=0:rc-lookahead=0:ref=1",
+        "-bf", "0",
+        "-preset", "ultrafast",
+        "-f", "h264",
+        "pipe:1",
+    ]
+
+    return subprocess.Popen(cmd, stdout=subprocess.PIPE)
+
 
 # ------------------------ Server main loop ------------------------
 
 def main():
-    if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <video_file>")
+    if len(sys.argv) == 2:
+        video_source = sys.argv[1]
+    elif len(sys.argv) == 1:
+        video_source = WEBCAM
+    else:
+        print("[Usage] must have either no arguments (for webcam) or one argument (for file)")
         sys.exit(1)
-
-    video_path = sys.argv[1]
-    proc = ffmpeg_h264_stream(video_path)
-    assert proc.stdout is not None
 
     # Create TCP server socket
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -233,6 +272,14 @@ def main():
 
     conn.sendall(b"OKAY")
     print("[server] Handshake OK (H264 <-> OKAY)")
+
+    #now start ffmpeg
+    if len(sys.argv) == 2:
+        proc = ffmpeg_h264_stream(video_source)
+    elif len(sys.argv) == 1:
+        proc = ffmpeg_h264_stream_webcam(video_source)
+
+    assert proc.stdout is not None
 
     # Rolling buffer accumulates ffmpeg bytes until we can split complete NALs.
     rolling = b""
