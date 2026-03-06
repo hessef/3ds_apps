@@ -38,14 +38,8 @@ DATA		:=	data
 INCLUDES	:=	include
 GRAPHICS	:=	gfx
 GFXBUILD	:=	$(BUILD)
-#ROMFS		:=	romfs
+ROMFS		:=	romfs
 #GFXBUILD	:=	$(ROMFS)/gfx
-
-#---------------------------------------------------------------------------------
-# Final output format
-#---------------------------------------------------------------------------------
-APP_TITLE	:=	VideoStreamer
-APP_AUTHOR	:=	Frederick Hesse
 
 #---------------------------------------------------------------------------------
 # options for code generation
@@ -167,6 +161,16 @@ endif
 .PHONY: all clean
 
 #---------------------------------------------------------------------------------
+ifeq (,$(wildcard $(ROMFS)/video.h264))
+#---------------------------------------------------------------------------------
+all:
+	@echo "video.h264 not found!"
+	@echo
+	@echo "Please supply a video file to build this example"
+
+#---------------------------------------------------------------------------------
+else
+#---------------------------------------------------------------------------------
 all: $(BUILD) $(GFXBUILD) $(DEPSDIR) $(ROMFS_T3XFILES) $(T3XHFILES)
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
@@ -184,6 +188,8 @@ $(DEPSDIR):
 endif
 
 #---------------------------------------------------------------------------------
+endif
+#---------------------------------------------------------------------------------
 clean:
 	@echo clean ...
 	@rm -fr $(BUILD) $(TARGET).3dsx $(OUTPUT).smdh $(TARGET).elf $(GFXBUILD)
@@ -200,7 +206,6 @@ else
 #---------------------------------------------------------------------------------
 # main targets
 #---------------------------------------------------------------------------------
-
 $(OUTPUT).3dsx	:	$(OUTPUT).elf $(_3DSXDEPS)
 
 $(OFILES_SOURCES) : $(HFILES)
