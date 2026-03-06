@@ -113,7 +113,7 @@ def start_ffmpeg_decoder() -> subprocess.Popen:
         "-i", "pipe:0",
 
         # Undo server transpose=1 (clockwise) by applying transpose=2 (counterclockwise)
-        "-vf", "transpose=2",
+        "-vf", f"transpose=2,scale={DISPLAY_W}:{DISPLAY_H}",
 
         # Output raw frames in BGR24 (matches OpenCV).
         "-f", "rawvideo",
@@ -183,6 +183,35 @@ def feeder_thread(sock: socket.socket, ff: subprocess.Popen, stop_flag: threadin
         except Exception:
             pass
 
+# -------------------- Background thread: ffmpeg.stdout -> latest frame --------------------
+def frame_reader_thread(ff: subprocess.Popen, shared: dict, lock: threading.Lock, stop_flag: threading.Event):
+    """
+    Reads raw frames from ffmpeg stdout in a blocking loop and stores the newest frame
+    into `shared["frame"]`.
+
+    This avoids blocking the UI thread.
+    """
+    assert ff.stdout is not None
+
+    try:
+        while not stop_flag.is_set():
+            raw = ff.stdout.read(FRAME_BYTES)
+            if not raw or len(raw) < FRAME_BYTES:
+                # Decoder ended or got starved; exit cleanly
+                break
+
+            frame = np.frombuffer(raw, dtype=np.uint8).reshape((DISPLAY_H, DISPLAY_W, 3))
+
+            # Store only the most recent frame (drop older frames)
+            with lock:
+                shared["frame"] = frame
+                shared["frames"] += 1
+
+    except Exception as e:
+        print(f"[reader] stopped: {e}")
+    finally:
+        stop_flag.set()
+
 # -------------------- Main: connect, handshake, render --------------------
 
 def main():
@@ -193,12 +222,12 @@ def main():
     server_ip = sys.argv[1]
     port = int(sys.argv[2]) if len(sys.argv) >= 3 else 5000
 
-    # ---- Connect to server ----
+    # --- Connect ---
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((server_ip, port))
     print(f"[client] Connected to {server_ip}:{port}")
 
-    # ---- Handshake ----
+    # --- Handshake ---
     sock.sendall(HELLO)
     reply = recv_all(sock, 4)
     if reply != OKAY:
@@ -207,54 +236,54 @@ def main():
         return
     print("[client] Handshake OK.")
 
-    # ---- Start ffmpeg decoder ----
+    # --- Start ffmpeg ---
     ff = start_ffmpeg_decoder()
-    assert ff.stdout is not None
-    assert ff.stdin is not None
+    assert ff.stdin is not None and ff.stdout is not None
 
-    # ---- Start feeder thread ----
     stop_flag = threading.Event()
-    t = threading.Thread(target=feeder_thread, args=(sock, ff, stop_flag), daemon=True)
-    t.start()
 
-    # ---- Display loop ----
+    # Shared state for the newest decoded frame
+    shared = {"frame": None, "frames": 0}
+    lock = threading.Lock()
+
+    # Start background threads
+    t_feed = threading.Thread(target=feeder_thread, args=(sock, ff, stop_flag), daemon=True)
+    t_read = threading.Thread(target=frame_reader_thread, args=(ff, shared, lock, stop_flag), daemon=True)
+    t_feed.start()
+    t_read.start()
+
+    # --- UI loop (main thread only) ---
     cv2.namedWindow("H264 Stream", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("H264 Stream", DISPLAY_W * 2, DISPLAY_H * 2)
 
-    frames = 0
-    last_time = time.time()
+    last_print = time.time()
+    last_frames = 0
 
     try:
         while not stop_flag.is_set():
-            # Read exactly one frame worth of raw bytes from ffmpeg stdout.
-            # If we get fewer bytes, ffmpeg likely ended or is starved.
-            raw = ff.stdout.read(FRAME_BYTES)
-            if not raw or len(raw) < FRAME_BYTES:
-                # If feeder stopped, this is expected. Otherwise, might be decode starvation.
-                break
+            # Grab the newest frame without blocking
+            with lock:
+                frame = shared["frame"]
+                frames = shared["frames"]
 
-            # Convert raw bytes to numpy image:
-            # - shape: (H, W, 3)
-            # - dtype: uint8
-            frame = np.frombuffer(raw, dtype=np.uint8).reshape((DISPLAY_H, DISPLAY_W, 3))
+            if frame is not None:
+                cv2.imshow("H264 Stream", frame)
 
-            # Show
-            cv2.imshow("H264 Stream", frame)
-
-            # Handle UI events. Press 'q' to quit.
+            # Process UI events; required for responsiveness on Windows
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 stop_flag.set()
                 break
 
-            # FPS stats (optional)
-            frames += 1
+            # Periodic FPS print
             now = time.time()
-            if now - last_time >= 2.0:
-                fps = frames / (now - last_time)
+            if now - last_print >= 2.0:
+                fps = (frames - last_frames) / (now - last_print)
                 print(f"[client] approx FPS: {fps:.1f}")
-                frames = 0
-                last_time = now
+                last_frames = frames
+                last_print = now
+
+        # If we exit because stop was set, fall through to cleanup.
 
     finally:
         stop_flag.set()
@@ -270,6 +299,8 @@ def main():
             pass
 
         cv2.destroyAllWindows()
+        if ff.poll() is not None:
+            print("[client] ffmpeg exited with code", ff.returncode)
         print("[client] Done.")
 
 if __name__ == "__main__":

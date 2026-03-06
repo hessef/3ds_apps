@@ -242,9 +242,14 @@ def main():
     try:
         while True:
             # Wait for 1-byte request from client.
-            req = conn.recv(1)
+            try:
+                req = conn.recv(1)
+            except OSError as e:
+                print(f"[server] recv error: {e}")
+                break
+
             if not req:
-                print("[server] Client disconnected.")
+                print("[server] client disconnected")
                 break
 
             if req != b"N":
@@ -283,8 +288,12 @@ def main():
                 # print(f"[server] Sending NAL type={nal_type}, bytes={len(nal)}")
 
             # Send length-prefixed NAL (big-endian u32), then send bytes.
-            conn.sendall(struct.pack(">I", len(nal)))
-            conn.sendall(nal)
+            try:
+                conn.sendall(struct.pack(">I", len(nal)))
+                conn.sendall(nal)
+            except OSError as e:
+                print(f"[server] client connection closed: {e}")
+                break
 
     finally:
         conn.close()
