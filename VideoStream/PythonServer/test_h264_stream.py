@@ -105,18 +105,14 @@ def start_ffmpeg_decoder() -> subprocess.Popen:
     """
     cmd = [
         "ffmpeg",
-        "-loglevel", "error",
-
-        # Low-latency-ish flags. Not mandatory, but helpful for streaming.
-        "-fflags", "nobuffer",
-        "-flags", "low_delay",
+        "-loglevel", "info",
 
         # Input is H.264 elementary stream from stdin.
         "-f", "h264",
         "-i", "pipe:0",
 
         # Undo server transpose=1 (clockwise) by applying transpose=2 (counterclockwise)
-        "-vf", f"transpose=2,scale={DISPLAY_W}:{DISPLAY_H}",
+        "-vf", f"transpose=2",
 
         # Output raw frames in BGR24 (matches OpenCV).
         "-f", "rawvideo",
@@ -133,8 +129,18 @@ def start_ffmpeg_decoder() -> subprocess.Popen:
     return subprocess.Popen(cmd, 
                             stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            bufsize=0)
+                            stderr=subprocess.PIPE)
+
+def ffmpeg_stderr_thread(ff: subprocess.Popen, stop_flag: threading.Event):
+    assert ff.stderr is not None
+    try:
+        while not stop_flag.is_set():
+            line = ff.stderr.readline()
+            if not line:
+                break
+            print("[ffmpeg]", line.decode(errors="replace").rstrip())
+    except Exception as e:
+        print(f"[ffmpeg-stderr] stopped: {e}")
 
 # -------------------- Network → ffmpeg feeder thread --------------------
 
@@ -165,6 +171,7 @@ def feeder_thread(sock: socket.socket, ff: subprocess.Popen, stop_flag: threadin
             length = recv_u32_be(sock)
             if length == 0:
                 # End-of-stream
+                print("[client] end of stream")
                 break
 
             # Read NAL bytes
@@ -210,6 +217,7 @@ def debug_feeder_thread(sock: socket.socket, stop_flag: threading.Event):
                 length = recv_u32_be(sock)
                 if length == 0:
                     # Server says end-of-stream
+                    print("[client] end of stream")
                     break
 
                 # Read the NAL unit itself
@@ -236,14 +244,13 @@ def frame_reader_thread(ff: subprocess.Popen, shared: dict, lock: threading.Lock
 
     try:
         while not stop_flag.is_set():
-            raw = ff.stdout.read(FRAME_BYTES)
-            if not raw or len(raw) < FRAME_BYTES:
-                # Decoder ended or got starved; exit cleanly
+            raw = read_exact_pipe(ff.stdout, FRAME_BYTES)
+            if not raw:
+                print("[reader] ffmpeg stdout reached EOF")
                 break
 
             frame = np.frombuffer(raw, dtype=np.uint8).reshape((DISPLAY_H, DISPLAY_W, 3))
 
-            # Store only the most recent frame (drop older frames)
             with lock:
                 shared["frame"] = frame
                 shared["frames"] += 1
@@ -253,6 +260,21 @@ def frame_reader_thread(ff: subprocess.Popen, shared: dict, lock: threading.Lock
     finally:
         stop_flag.set()
 
+def read_exact_pipe(pipe, n: int) -> bytes:
+    """
+    Read exactly n bytes from a pipe.
+    Return b"" only if EOF happens before any bytes are read.
+    Raise RuntimeError if EOF happens mid-frame.
+    """
+    out = bytearray()
+    while len(out) < n:
+        chunk = pipe.read(n - len(out))
+        if not chunk:
+            if len(out) == 0:
+                return b""
+            raise RuntimeError(f"Pipe closed mid-frame: got {len(out)} of {n} bytes")
+        out += chunk
+    return bytes(out)
 # -------------------- Main: connect, handshake, render --------------------
 
 def main():
@@ -293,23 +315,26 @@ def main():
     else:
         t_feed = threading.Thread(target=feeder_thread, args=(sock, ff, stop_flag), daemon=True)
     t_read = threading.Thread(target=frame_reader_thread, args=(ff, shared, lock, stop_flag), daemon=True)
+    t_stderr = threading.Thread(target=ffmpeg_stderr_thread, args=(ff, stop_flag), daemon=True)
     t_feed.start()
     t_read.start()
+    t_stderr.start()
 
     # --- UI loop (main thread only) ---
-    #cv2.namedWindow("H264 Stream", cv2.WINDOW_NORMAL)
-    #cv2.resizeWindow("H264 Stream", DISPLAY_W * 2, DISPLAY_H * 2)
+    cv2.namedWindow("H264 Stream", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("H264 Stream", DISPLAY_W * 2, DISPLAY_H * 2)
 
     last_print = time.time()
     last_frames = 0
 
     try:
         while not stop_flag.is_set():
+            
             # Grab the newest frame without blocking
             with lock:
                 frame = shared["frame"]
                 frames = shared["frames"]
-            """
+            
             if frame is not None:
                 cv2.imshow("H264 Stream", frame)
 
@@ -318,7 +343,7 @@ def main():
             if key == ord('q'):
                 stop_flag.set()
                 break
-            """
+            
             # Periodic FPS print
             now = time.time()
             if now - last_print >= 2.0:
