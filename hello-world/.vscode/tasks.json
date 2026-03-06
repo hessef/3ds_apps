@@ -7,7 +7,7 @@
       "command": "C:\\devkitPro\\msys2\\usr\\bin\\bash.exe",
       "args": [
         "-lc",
-        "cd /c/Users/there/Documents/3DS_Programs/hello-world && make"
+        "cd /c/Users/there/Documents/3ds_apps/hello-world && make"
       ],
       "problemMatcher": "$gcc",
       "group": {

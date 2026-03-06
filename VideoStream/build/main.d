@@ -1,4 +1,4 @@
-main.o: C:/Users/there/Documents/3DS_Programs/VideoStream/source/main.c \
+main.o: C:/Users/there/Documents/3ds_apps/VideoStream/source/main.c \
  C:/devkitPro/libctru-master/libctru/include/3ds.h \
  C:/devkitPro/libctru-master/libctru/include/3ds/types.h \
  C:/devkitPro/libctru-master/libctru/include/3ds/result.h \
