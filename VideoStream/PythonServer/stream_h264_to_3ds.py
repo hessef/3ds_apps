@@ -241,20 +241,6 @@ def main():
 
     try:
         while True:
-            # Wait for 1-byte request from client.
-            try:
-                req = conn.recv(1)
-            except OSError as e:
-                print(f"[server] recv error: {e}")
-                break
-
-            if not req:
-                print("[server] client disconnected")
-                break
-
-            if req != b"N":
-                print(f"[server] Unexpected request byte: {req!r}")
-                break
 
             # Ensure at least one complete NAL is available.
             while not nal_queue:
@@ -285,7 +271,7 @@ def main():
                 # Common types:
                 # 7=SPS, 8=PPS, 5=IDR (keyframe), 1=non-IDR slice, 6=SEI
                 # We log occasionally without being too spammy.
-                # print(f"[server] Sending NAL type={nal_type}, bytes={len(nal)}")
+                print(f"[server] Sending NAL type={nal_type}, bytes={len(nal)}")
 
             # Send length-prefixed NAL (big-endian u32), then send bytes.
             try:

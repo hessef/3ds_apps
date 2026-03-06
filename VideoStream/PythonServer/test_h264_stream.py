@@ -205,8 +205,6 @@ def debug_feeder_thread(sock: socket.socket, stop_flag: threading.Event):
     with open("debug_stream.h264", "wb") as h264_file:
         try:
             while not stop_flag.is_set():
-                # Request the next NAL from the server
-                sock.sendall(REQUEST_BYTE)
 
                 # Read the 4-byte big-endian length
                 length = recv_u32_be(sock)
