@@ -52,6 +52,9 @@ import time
 import numpy as np
 import cv2
 
+# -------------------- Debug constants --------------------
+DEBUG = True
+
 # -------------------- Protocol constants --------------------
 REQUEST_BYTE = b"N"
 HELLO = b"H264"
@@ -127,7 +130,11 @@ def start_ffmpeg_decoder() -> subprocess.Popen:
     ]
 
     # bufsize=0 to make pipes as immediate as possible
-    return subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
+    return subprocess.Popen(cmd, 
+                            stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            bufsize=0)
 
 # -------------------- Network → ffmpeg feeder thread --------------------
 
@@ -182,6 +189,42 @@ def feeder_thread(sock: socket.socket, ff: subprocess.Popen, stop_flag: threadin
                 ff.stdin.close()
         except Exception:
             pass
+
+def debug_feeder_thread(sock: socket.socket, stop_flag: threading.Event):
+    """
+    Runs in a background thread.
+
+    Job:
+    - Request NAL units from the server
+    - Save them to a .h264 file for debugging
+    - Push them into ffmpeg's stdin as a continuous bytestream
+    """
+
+    # Open a debug output file in binary write mode.
+    # This will contain the exact H.264 Annex-B stream received from the server.
+    with open("debug_stream.h264", "wb") as h264_file:
+        try:
+            while not stop_flag.is_set():
+                # Request the next NAL from the server
+                sock.sendall(REQUEST_BYTE)
+
+                # Read the 4-byte big-endian length
+                length = recv_u32_be(sock)
+                if length == 0:
+                    # Server says end-of-stream
+                    break
+
+                # Read the NAL unit itself
+                nal = recv_all(sock, length)
+
+                # Save the NAL to disk exactly as received
+                h264_file.write(nal)
+                h264_file.flush()
+
+        except Exception as e:
+            print(f"[feeder] stopped: {e}")
+        finally:
+            stop_flag.set()
 
 # -------------------- Background thread: ffmpeg.stdout -> latest frame --------------------
 def frame_reader_thread(ff: subprocess.Popen, shared: dict, lock: threading.Lock, stop_flag: threading.Event):
@@ -247,14 +290,17 @@ def main():
     lock = threading.Lock()
 
     # Start background threads
-    t_feed = threading.Thread(target=feeder_thread, args=(sock, ff, stop_flag), daemon=True)
+    if DEBUG:
+        t_feed = threading.Thread(target=debug_feeder_thread, args=(sock, stop_flag), daemon=True)
+    else:
+        t_feed = threading.Thread(target=feeder_thread, args=(sock, ff, stop_flag), daemon=True)
     t_read = threading.Thread(target=frame_reader_thread, args=(ff, shared, lock, stop_flag), daemon=True)
     t_feed.start()
     t_read.start()
 
     # --- UI loop (main thread only) ---
-    cv2.namedWindow("H264 Stream", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("H264 Stream", DISPLAY_W * 2, DISPLAY_H * 2)
+    #cv2.namedWindow("H264 Stream", cv2.WINDOW_NORMAL)
+    #cv2.resizeWindow("H264 Stream", DISPLAY_W * 2, DISPLAY_H * 2)
 
     last_print = time.time()
     last_frames = 0
@@ -265,7 +311,7 @@ def main():
             with lock:
                 frame = shared["frame"]
                 frames = shared["frames"]
-
+            """
             if frame is not None:
                 cv2.imshow("H264 Stream", frame)
 
@@ -282,7 +328,7 @@ def main():
                 print(f"[client] approx FPS: {fps:.1f}")
                 last_frames = frames
                 last_print = now
-
+            """
         # If we exit because stop was set, fall through to cleanup.
 
     finally:
