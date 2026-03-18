@@ -7,6 +7,14 @@
 #include "vshader_shbin.h"
 #include "kitten_t3x.h"
 
+//for tiny obj loader
+#include <string>
+#include <vector>
+#include <map>
+#include <unordered_map>
+#define TINYOBJLOADER_IMPLEMENTATION
+#include "tiny_obj_loader.h"
+
 #define CLEAR_COLOR 0x68B0D8FF
 
 #define DISPLAY_TRANSFER_FLAGS \
@@ -14,8 +22,10 @@
 	GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8) | GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8) | \
 	GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO))
 
+//keep this as-is from the example
 typedef struct { float position[3]; float texcoord[2]; float normal[3]; } vertex;
 
+//returns heap-allocated vertex array in place of hard-coded array from example
 static const vertex vertex_list[] =
 {
 	// First face (PZ)
@@ -158,7 +168,7 @@ static void sceneInit(void)
 	// See https://www.opengl.org/sdk/docs/man2/xhtml/glTexEnv.xml for more insight
 	C3D_TexEnv* env = C3D_GetTexEnv(0);
 	C3D_TexEnvInit(env);
-	C3D_TexEnvSrc(env, C3D_Both, GPU_TEXTURE0, GPU_PRIMARY_COLOR, 0);
+	C3D_TexEnvSrc(env, C3D_Both, GPU_TEXTURE0, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR);
 	C3D_TexEnvFunc(env, C3D_Both, GPU_MODULATE);
 }
 
