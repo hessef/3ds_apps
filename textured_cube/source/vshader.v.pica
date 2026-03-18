@@ -1,0 +1,146 @@
+; Example PICA200 vertex shader
+
+; === UNIFORMS ===
+; Values uploaded from the CPU once per draw call via C3D_FVUnifMtx4x4 / C3D_FVUnifSet.
+; They are constant across all vertices in a single draw call.
+; A 4×4 matrix is stored as 4 float-vectors (one per row), hence [4].
+.fvec projection[4], modelView[4]
+.fvec lightVec, lightHalfVec, lightClr, material[4]
+
+; Convenient aliases for the four rows of the material matrix.
+; These correspond to the four rows of the C3D_Mtx material defined in main.c.
+.alias mat_amb material[0]  ; ambient  — base light, always present
+.alias mat_dif material[1]  ; diffuse  — directional shading
+.alias mat_spe material[2]  ; specular — shiny highlight
+.alias mat_emi material[3]  ; emission — self-glow (zero in this example)
+
+; === CONSTANTS ===
+; PICA200 has no instruction-level immediate values for most operations,
+; so constants are pre-declared and referenced by swizzle.
+; myconst = (0.0, 1.0, -1.0, -0.5) stored in one float-vector register.
+.constf myconst(0.0, 1.0, -1.0, -0.5)
+.alias  zeros myconst.xxxx  ; (0.0, 0.0, 0.0, 0.0) — all four lanes are x=0.0
+.alias  ones  myconst.yyyy  ; (1.0, 1.0, 1.0, 1.0) — all four lanes are y=1.0
+
+; === OUTPUTS ===
+; These are written by the shader and read by the rasterizer.
+; The rasterizer interpolates them across each triangle, then the TexEnv
+; fragment stage reads the interpolated values for each pixel.
+.out outpos position   ; clip-space position — determines where the vertex lands on screen
+.out outtc0 texcoord0  ; UV coordinates — passed to the texture sampler
+.out outclr color      ; lighting result — multiplied by texture color in TexEnv
+
+; === INPUTS ===
+; These arrive from the vertex buffer, one set per vertex.
+; The mapping to v0/v1/v2 is set up by AttrInfo_AddLoader in sceneInit().
+.alias inpos v0  ; XYZ position
+.alias intex v1  ; UV texture coordinates
+.alias innrm v2  ; surface normal
+
+.proc main
+
+    ; === STEP 1: TRANSFORM POSITION TO CLIP SPACE ===
+    ; We need a 4-component homogeneous vector to multiply with the 4×4 matrices.
+    ; Copy XYZ from the input and force W=1.0.
+    ; W=1 signals "this is a point" — it will be translated by the matrix.
+    ; W=0 would mean "this is a direction" — translation would be ignored.
+    mov r0.xyz, inpos
+    mov r0.w,   ones      ; r0 = (x, y, z, 1.0)
+
+    ; Multiply by the modelView matrix: r1 = modelView × r0
+    ; A 4×4 matrix times a 4-vector = four dot products, one per output component.
+    ; dp4 computes a 4-component dot product: r1.x = dot(modelView[0], r0), etc.
+    ; Result r1 is the vertex position in view/camera space.
+    dp4 r1.x, modelView[0], r0
+    dp4 r1.y, modelView[1], r0
+    dp4 r1.z, modelView[2], r0
+    dp4 r1.w, modelView[3], r0
+
+    ; Multiply by the projection matrix: outpos = projection × r1
+    ; This converts from view space to clip space — the coordinate system where
+    ; the GPU performs clipping, perspective division, and viewport mapping.
+    ; After this, W encodes depth and the hardware divides XYZ by W to get
+    ; normalized device coordinates.
+    dp4 outpos.x, projection[0], r1
+    dp4 outpos.y, projection[1], r1
+    dp4 outpos.z, projection[2], r1
+    dp4 outpos.w, projection[3], r1
+
+    ; === STEP 2: PASS TEXTURE COORDINATES THROUGH ===
+    ; UVs don't need transformation — just copy them to the output.
+    ; The rasterizer will interpolate them across the triangle surface,
+    ; so each pixel gets the UV that corresponds to its barycentric position.
+    mov outtc0, intex
+
+    ; === STEP 3: TRANSFORM AND NORMALIZE THE SURFACE NORMAL ===
+    ; The normal must rotate with the model (so lighting stays correct as the cube spins)
+    ; but must NOT be translated — normals are directions, not points.
+    ; W=0 suppresses translation in the matrix multiply.
+    mov r0.xyz, innrm
+    mov r0.w,   zeros     ; r0 = (nx, ny, nz, 0.0)
+
+    ; Rotate normal by modelView (same matrix as position, but W=0 skips translation).
+    ; We only need XYZ out, so we skip computing r1.w.
+    dp4 r1.x, modelView[0], r0
+    dp4 r1.y, modelView[1], r0
+    dp4 r1.z, modelView[2], r0
+    mov r1.w, zeros
+
+    ; Normalize r1: after transformation the normal may no longer be unit length
+    ; (if modelView has any scaling), so we normalize it manually.
+    ; dp3 r2, r1, r1 = dot(r1, r1) = x²+y²+z², broadcast to all 4 components of r2.
+    ; rsq r2, r2     = 1/sqrt(r2) for each component — "reciprocal square root".
+    ; mul r1, r2, r1 = r1 * (1/|r1|) = unit vector.
+    dp3 r2, r1, r1   ; r2 = squared length of r1 (in all components)
+    rsq r2, r2        ; r2 = 1/sqrt(squared length)
+    mul r1, r2, r1    ; r1 = normalized normal
+
+    ; === STEP 4: CALCULATE LIGHTING (BLINN-PHONG) ===
+    ; r1 now holds the normalized surface normal in view space.
+
+    ; Diffuse level = max(0, -dot(lightVec, normal))
+    ; The dot product is positive when the surface faces the light and negative when
+    ; it faces away. We negate it so facing-toward gives a positive (bright) value.
+    ; max with zero clamps surfaces facing away from the light to 0 (no negative light).
+    dp3 r0.x, lightVec, r1       ; r0.x = dot(lightVec, normal)
+    add r0.x, zeros, -r0         ; r0.x = -r0.x (negate)
+
+    ; Specular level = max(0, dot(-lightHalfVec, normal))²
+    ; The half vector is halfway between the light direction and the view direction.
+    ; Its dot product with the normal peaks when you're looking directly at the reflection.
+    ; Squaring it makes the highlight tight and shiny (higher power = smaller highlight).
+    dp3 r0.y, -lightHalfVec, r1  ; r0.y = dot(-halfVec, normal)
+    max r0, zeros, r0             ; clamp both x and y to [0, ∞)
+    mul r0.y, r0, r0              ; r0.y = r0.y² (squaring sharpens the specular highlight)
+
+    ; === STEP 5: ACCUMULATE LIGHTING CONTRIBUTIONS ===
+    ; Final color = emission + specular + diffuse + ambient
+    ; Each term is: materialColor * lightColor * intensity
+    ; mad = multiply-add: mad r1, a, b, c → r1 = a*b + c (one instruction)
+
+    ; Start with emission — self-glow, independent of any light source.
+    ; In this example mat_emi has RGB=0 so the cube doesn't glow, but the slot is here.
+    mov r1, mat_emi
+
+    ; Add specular: lightColor * shininessLevel * specularMaterial
+    ; r0.yyyy broadcasts r0.y (the specular level) to all 4 components for the multiply.
+    mul r2, lightClr, r0.yyyy     ; r2 = lightColor × specularLevel
+    mad r1, r2, mat_spe, r1       ; r1 += r2 × mat_spe
+
+    ; Add diffuse: lightColor * diffuseLevel * diffuseMaterial
+    ; r0.xxxx broadcasts r0.x (the diffuse level).
+    mul r2, lightClr, r0.xxxx     ; r2 = lightColor × diffuseLevel
+    mad r1, r2, mat_dif, r1       ; r1 += r2 × mat_dif
+
+    ; Add ambient: always-present base light, no intensity factor needed.
+    mov r2, lightClr
+    mad r1, r2, mat_amb, r1       ; r1 += lightColor × mat_amb
+
+    ; Clamp the final color to [0, 1] per component to prevent overflow artifacts.
+    ; min(ones, r1) clips anything above 1.0 back to 1.0.
+    ; This is output as outclr, which the TexEnv multiplies by the texture color.
+    min outclr, ones, r1
+
+    ; Shader execution complete for this vertex.
+    end
+.end
